@@ -1,13 +1,12 @@
 import argparse
 import os
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Optional, List
+from typing import Any, AsyncIterator, Optional
 from dotenv import load_dotenv
 import json
 from mcp.server.fastmcp.server import FastMCP, Context
 from pymilvus import (
     MilvusClient,
-    DataType,
     AnnSearchRequest,
     RRFRanker,
 )
@@ -218,116 +217,6 @@ class MilvusConnector:
         except Exception as e:
             raise ValueError(f"Hybrid search failed: {str(e)}")
 
-    async def create_collection(
-        self,
-        collection_name: str,
-        auto_id: bool = True,
-        dimension: int = 768,
-        primary_field_name: str = "id",
-        vector_field_name: str = "vector",
-        metric_type: str = "COSINE",
-        field_schema: list[dict[str, Any]] = None,
-        index_params: list[dict[str, Any]] = None,
-        **kwargs: Any
-    ) -> bool:
-        """
-        Create a new collection with quick setup or customized schema.
-
-        Args:
-            collection_name: Name for the new collection
-            auto_id: whether to auto generate id, default to True
-            dimension: vector dimension, default to 768; for quick setup and will be ignored if field_schema is provided
-            primary_field_name: name of the primary field, default to "id"; for quick setup and will be ignored if field_schema is provided
-            vector_field_name: name of the vector field, default to "vector"; for quick setup and will be ignored if field_schema is provided
-            metric_type: metric type, default to "COSINE"; for quick setup and will be ignored if field_schema is provided
-            field_schema: List of field schema, each element is a dictionary with the following keys:
-                - name: name of the field
-                - type: type of the field
-                - dimension: dimension of the field
-                - index_type: index type
-            index_params: List of indexes with parameters, each element is a dictionary with the following keys:
-                - field_name: name of the field to index
-                - index_type: index type
-                - **kwargs: other optional index parameters
-                Default to None, which means no index will be created. If field_schema is not None, you will need to create index and then load collection manually after collection creation.
-            **kwargs: Additional parameters for the collection creation
-        """
-        try:
-            # Check if collection already exists
-            if collection_name in self.client.list_collections():
-                raise ValueError(f"Collection '{collection_name}' already exists")
-
-            schema_kwargs = {
-                "auto_id": auto_id,
-                "enable_dynamic_field": kwargs.get("enable_dynamic_field", True),
-            }
-            if "partition_key_isolation" in kwargs:
-                schema_kwargs["partition_key_isolation"] = kwargs["partition_key_isolation"]
-
-            if field_schema is not None:
-                schema = MilvusClient.create_schema(**schema_kwargs)
-                for field_kwargs in field_schema:
-                    field_kwargs["datatype"] = getattr(DataType, field_kwargs["datatype"].upper())
-                    schema.add_field(**field_kwargs)
-            else:
-                schema = None
-
-            built_index_params = MilvusClient.prepare_index_params()
-            if index_params is not None or len(index_params) > 0:
-                for index_kwargs in index_params:
-                    built_index_params.add_index(**index_kwargs)
-
-            # Create collection
-            self.client.create_collection(
-                collection_name=collection_name,
-                auto_id=auto_id,
-                dimension=dimension,
-                primary_field_name=primary_field_name,
-                vector_field_name=vector_field_name,
-                metric_type=metric_type,
-                schema=schema,
-                index_params=built_index_params if index_params is not None else None,
-                **kwargs
-            )
-
-            return True
-        except Exception as e:
-            raise ValueError(f"Failed to create collection: {str(e)}")
-
-    async def insert_data(
-        self, collection_name: str, data: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        """
-        Insert data into a collection.
-
-        Args:
-            collection_name: Name of collection
-            data: List of dictionaries, each representing a record
-        """
-        try:
-            result = self.client.insert(collection_name=collection_name, data=data)
-            return result
-        except Exception as e:
-            raise ValueError(f"Insert failed: {str(e)}")
-
-    async def delete_entities(
-        self, collection_name: str, filter_expr: str
-    ) -> dict[str, Any]:
-        """
-        Delete entities from a collection based on filter expression.
-
-        Args:
-            collection_name: Name of collection
-            filter_expr: Filter expression to select entities to delete
-        """
-        try:
-            result = self.client.delete(
-                collection_name=collection_name, expr=filter_expr
-            )
-            return result
-        except Exception as e:
-            raise ValueError(f"Delete failed: {str(e)}")
-
     async def get_collection_stats(self, collection_name: str) -> dict[str, Any]:
         """
         Get statistics about a collection.
@@ -381,73 +270,6 @@ class MilvusConnector:
         except Exception as e:
             raise ValueError(f"Multi-vector search failed: {str(e)}")
 
-    async def create_index(
-        self,
-        collection_name: str,
-        field_name: str,
-        index_type: str = "IVF_FLAT",
-        metric_type: str = "COSINE",
-        params: Optional[dict[str, Any]] = None,
-    ) -> bool:
-        """
-        Create an index on a vector field.
-
-        Args:
-            collection_name: Name of collection
-            field_name: Field to index
-            index_type: Type of index (IVF_FLAT, HNSW, etc.)
-            metric_type: Distance metric (COSINE, L2, IP)
-            params: Additional index parameters
-        """
-        try:
-            if params is None:
-                params = {"nlist": 1024}
-
-            index_params = {
-                "index_type": index_type,
-                "metric_type": metric_type,
-                "params": params,
-            }
-
-            self.client.create_index(
-                collection_name=collection_name,
-                field_name=field_name,
-                index_params=index_params,
-            )
-            return True
-        except Exception as e:
-            raise ValueError(f"Failed to create index: {str(e)}")
-
-    async def bulk_insert(
-        self, collection_name: str, data: dict[str, list[Any]], batch_size: int = 1000
-    ) -> list[dict[str, Any]]:
-        """
-        Insert data in batches for better performance.
-
-        Args:
-            collection_name: Name of collection
-            data: Dictionary mapping field names to lists of values
-            batch_size: Number of records per batch
-        """
-        try:
-            results = []
-            field_names = list(data.keys())
-            total_records = len(data[field_names[0]])
-
-            for i in range(0, total_records, batch_size):
-                batch_data = {
-                    field: data[field][i : i + batch_size] for field in field_names
-                }
-
-                result = self.client.insert(
-                    collection_name=collection_name, data=batch_data
-                )
-                results.append(result)
-
-            return results
-        except Exception as e:
-            raise ValueError(f"Bulk insert failed: {str(e)}")
-
     async def load_collection(
         self, collection_name: str, replica_number: int = 1
     ) -> bool:
@@ -490,22 +312,6 @@ class MilvusConnector:
             return self.client.get_query_segment_info(collection_name)
         except Exception as e:
             raise ValueError(f"Failed to get query segment info: {str(e)}")
-
-    async def upsert_data(
-        self, collection_name: str, data: dict[str, list[Any]]
-    ) -> dict[str, Any]:
-        """
-        Upsert data into a collection (insert or update if exists).
-
-        Args:
-            collection_name: Name of collection
-            data: Dictionary mapping field names to lists of values
-        """
-        try:
-            result = self.client.upsert(collection_name=collection_name, data=data)
-            return result
-        except Exception as e:
-            raise ValueError(f"Upsert failed: {str(e)}")
 
     async def get_index_info(
         self, collection_name: str, field_name: Optional[str] = None
@@ -811,99 +617,6 @@ async def milvus_text_similarity_search(
 
 
 @mcp.tool()
-async def milvus_create_collection(
-    collection_name: str,
-    auto_id: bool = True,
-    dimension: Optional[int] = 768,
-    primary_field_name: Optional[str] = "id",
-    vector_field_name: Optional[str] = "vector",
-    metric_type: Optional[str] = "COSINE",
-    field_schema: Optional[list[dict[str, Any]]] = None,
-    index_params: Optional[list[dict[str, Any]]] = None,
-    other_kwargs: Optional[dict[str, Any]] = None,
-    ctx: Context = None,
-) -> str:
-    """
-    Create a new collection with specified schema.
-
-    Args:
-        collection_name: Name for the new collection
-        auto_id: whether to auto generate id, default to True
-        dimension: vector dimension, default to 768; for quick setup and will be ignored if field_schema is provided
-        primary_field_name: name of the primary field, default to "id"; for quick setup and will be ignored if field_schema is provided
-        vector_field_name: name of the vector field, default to "vector"; for quick setup and will be ignored if field_schema is provided
-        metric_type: metric type, default to "COSINE"; for quick setup and will be ignored if field_schema is provided
-        field_schema: List of field schema, each element is a dictionary with the following keys:
-            - name: name of the field
-            - type: type of the field
-        index_params: Optional list of index parameters, each element is a dictionary with the following keys:
-            - field_name: name of the field to index
-            - index_type: index type
-            - **kwargs: other optional index parameters
-        other_kwargs: Additional keyword arguments for the collection creation
-    """
-    try:
-        connector = ctx.request_context.lifespan_context.connector
-        success = await connector.create_collection(
-            collection_name=collection_name,
-            auto_id=auto_id,
-            dimension=dimension,
-            primary_field_name=primary_field_name,
-            vector_field_name=vector_field_name,
-            metric_type=metric_type,
-            field_schema=field_schema,
-            index_params=index_params,
-            **(other_kwargs if other_kwargs is not None else {})
-        )
-
-        return f"Collection '{collection_name}' created successfully"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool()
-async def milvus_insert_data(
-    collection_name: str, data: list[dict[str, Any]], ctx: Context = None
-) -> str:
-    """
-    Insert data into a collection.
-
-    Args:
-        collection_name: Name of collection
-        data: List of dictionaries, each representing a record
-    """
-    try:
-        connector = ctx.request_context.lifespan_context.connector
-        result = await connector.insert_data(collection_name=collection_name, data=data)
-
-        return f"Data inserted into collection '{collection_name}' with result: {str(result)}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool()
-async def milvus_delete_entities(
-    collection_name: str, filter_expr: str, ctx: Context = None
-) -> str:
-    """
-    Delete entities from a collection based on filter expression.
-
-    Args:
-        collection_name: Name of collection
-        filter_expr: Filter expression to select entities to delete
-    """
-    try:
-        connector = ctx.request_context.lifespan_context.connector
-        result = await connector.delete_entities(
-            collection_name=collection_name, filter_expr=filter_expr
-        )
-
-        return f"Entities deleted from collection '{collection_name}' with result: {str(result)}"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@mcp.tool()
 async def milvus_load_collection(
     collection_name: str, replica_number: int = 1, ctx: Context = None
 ) -> str:
@@ -916,7 +629,7 @@ async def milvus_load_collection(
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        success = await connector.load_collection(
+        await connector.load_collection(
             collection_name=collection_name, replica_number=replica_number
         )
 
@@ -935,7 +648,7 @@ async def milvus_release_collection(collection_name: str, ctx: Context = None) -
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        success = await connector.release_collection(collection_name=collection_name)
+        await connector.release_collection(collection_name=collection_name)
 
         return f"Collection '{collection_name}' released successfully"
     except Exception as e:
@@ -963,7 +676,7 @@ async def milvus_use_database(db_name: str, ctx: Context = None) -> str:
     """
     try:
         connector = ctx.request_context.lifespan_context.connector
-        success = await connector.use_database(db_name)
+        await connector.use_database(db_name)
 
         return f"Switched to database '{db_name}' successfully"
     except Exception as e:
